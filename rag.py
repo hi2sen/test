@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -17,7 +18,8 @@ from langchain_core.documents import Document
 
 BASE_DIR = Path(__file__).resolve().parent
 DOCUMENTS_DIR = BASE_DIR / "data" / "documents"
-METADATA_PATH = BASE_DIR / "data" / "documents.json"
+DATABASE_PATH = BASE_DIR / "data" / "app.db"
+LEGACY_METADATA_PATH = BASE_DIR / "data" / "documents.json"
 INDEX_DIR = BASE_DIR / "data" / "index"
 INDEX_MANIFEST_PATH = INDEX_DIR / "manifest.json"
 ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md"}
@@ -49,23 +51,69 @@ Question:
 def ensure_storage():
     DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
-    if not METADATA_PATH.exists():
-        METADATA_PATH.write_text("[]", encoding="utf-8")
+    with sqlite3.connect(DATABASE_PATH) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS documents (
+                name TEXT PRIMARY KEY,
+                size INTEGER NOT NULL,
+                modified INTEGER NOT NULL
+            )
+            """
+        )
+        if LEGACY_METADATA_PATH.exists():
+            existing_count = connection.execute(
+                "SELECT COUNT(*) FROM documents"
+            ).fetchone()[0]
+            if existing_count == 0:
+                try:
+                    legacy_documents = json.loads(
+                        LEGACY_METADATA_PATH.read_text(encoding="utf-8")
+                    )
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(
+                        f"Invalid document metadata in {LEGACY_METADATA_PATH}"
+                    ) from exc
+                connection.executemany(
+                    """
+                    INSERT OR REPLACE INTO documents (name, size, modified)
+                    VALUES (?, ?, ?)
+                    """,
+                    [
+                        (
+                            document["name"],
+                            document["size"],
+                            document["modified"],
+                        )
+                        for document in legacy_documents
+                    ],
+                )
 
 
 def read_metadata():
     ensure_storage()
-    try:
-        return json.loads(METADATA_PATH.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Invalid document metadata in {METADATA_PATH}") from exc
+    with sqlite3.connect(DATABASE_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            "SELECT name, size, modified FROM documents ORDER BY name"
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def write_metadata(documents):
-    METADATA_PATH.write_text(
-        json.dumps(documents, indent=2, ensure_ascii=True),
-        encoding="utf-8",
-    )
+    ensure_storage()
+    with sqlite3.connect(DATABASE_PATH) as connection:
+        connection.execute("DELETE FROM documents")
+        connection.executemany(
+            """
+            INSERT INTO documents (name, size, modified)
+            VALUES (?, ?, ?)
+            """,
+            [
+                (document["name"], document["size"], document["modified"])
+                for document in documents
+            ],
+        )
 
 
 def load_file(path):
