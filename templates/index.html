@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local RAG Explorer</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+    body { margin: 0; background: #10131a; color: #e8ecf1; }
+    main { max-width: 1100px; margin: 0 auto; padding: 40px 20px; }
+    h1 { margin: 0 0 8px; font-size: 32px; }
+    .subtitle { color: #9da8b8; margin: 0 0 28px; }
+    .layout { display: grid; grid-template-columns: 1.4fr .8fr; gap: 20px; }
+    .card { background: #191e27; border: 1px solid #2a3442; border-radius: 14px; padding: 20px; }
+    label { display: block; color: #b8c2d0; font-size: 14px; margin-bottom: 8px; }
+    textarea, input[type=file] { width: 100%; box-sizing: border-box; background: #10131a; color: #fff; border: 1px solid #354153; border-radius: 8px; padding: 12px; }
+    textarea { min-height: 100px; resize: vertical; }
+    button { margin-top: 12px; border: 0; border-radius: 8px; padding: 11px 16px; background: #5b8cff; color: white; cursor: pointer; font-weight: 600; }
+    button:disabled { opacity: .5; cursor: wait; }
+    #answer { white-space: pre-wrap; line-height: 1.6; margin-top: 20px; color: #e8ecf1; }
+    .status { color: #9da8b8; min-height: 22px; margin-top: 10px; }
+    .progress-wrap { display: none; margin-top: 14px; }
+    .progress-wrap.active { display: block; }
+    .progress-track { height: 7px; overflow: hidden; background: #2a3442; border-radius: 999px; }
+    .progress-bar { width: 38%; height: 100%; background: #5b8cff; border-radius: inherit; animation: progress-slide 1.2s ease-in-out infinite; }
+    @keyframes progress-slide {
+      0% { transform: translateX(-110%); }
+      50% { transform: translateX(170%); }
+      100% { transform: translateX(290%); }
+    }
+    .progress-label { color: #93b4ff; font-size: 13px; margin-top: 7px; }
+    ul { padding-left: 20px; margin-bottom: 0; }
+    li { margin: 10px 0; overflow-wrap: anywhere; color: #d6deea; }
+    .sources { color: #93b4ff; font-size: 13px; }
+    @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Local RAG Explorer</h1>
+    <p class="subtitle">Ask questions against your local documents using Ollama.</p>
+    <div class="layout">
+      <section class="card">
+        <label for="query">Ask a question</label>
+        <textarea id="query" placeholder="e.g. What are the main requirements?"></textarea>
+        <button id="ask">Ask</button>
+        <div id="query-progress" class="progress-wrap" role="status" aria-live="polite">
+          <div class="progress-track" aria-hidden="true"><div class="progress-bar"></div></div>
+          <div id="progress-label" class="progress-label">Searching documents...</div>
+        </div>
+        <div id="query-status" class="status"></div>
+        <div id="answer"></div>
+        <div id="sources" class="sources"></div>
+      </section>
+      <aside class="card">
+        <label for="files">Add documents</label>
+        <input id="files" type="file" multiple accept=".pdf,.txt,.md">
+        <button id="upload">Add to RAG</button>
+        <div id="upload-status" class="status"></div>
+        <h3>Indexed documents</h3>
+        <ul id="documents"><li>Loading...</li></ul>
+      </aside>
+    </div>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    async function loadDocuments() {
+      const response = await fetch("/api/documents");
+      const data = await response.json();
+      $("documents").innerHTML = data.documents.length
+        ? data.documents.map((doc) => `<li>${escapeHtml(doc.name)}</li>`).join("")
+        : "<li>No documents added yet.</li>";
+    }
+    function escapeHtml(value) {
+      return value.replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+      }[char]));
+    }
+    $("upload").onclick = async () => {
+      const files = $("files").files;
+      if (!files.length) { $("upload-status").textContent = "Choose a file first."; return; }
+      const form = new FormData();
+      [...files].forEach((file) => form.append("files", file));
+      $("upload").disabled = true;
+      $("upload-status").textContent = "Adding documents...";
+      const response = await fetch("/api/documents", { method: "POST", body: form });
+      const data = await response.json();
+      $("upload-status").textContent = response.ok
+        ? `${data.added.length} document(s) added.`
+        : data.error;
+      $("upload").disabled = false;
+      if (response.ok) { $("files").value = ""; await loadDocuments(); }
+    };
+    $("ask").onclick = async () => {
+      const query = $("query").value.trim();
+      if (!query) { $("query-status").textContent = "Enter a question first."; return; }
+      $("ask").disabled = true;
+      $("query-progress").classList.add("active");
+      $("progress-label").textContent = "Searching documents and generating an answer...";
+      $("query-status").textContent = "";
+      $("answer").textContent = "";
+      $("sources").textContent = "";
+      try {
+        const response = await fetch("/api/query", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          $("query-status").textContent = data.error || "The query failed.";
+          return;
+        }
+        $("answer").textContent = data.answer;
+        $("sources").textContent = data.sources.length ? `Sources: ${data.sources.join(", ")}` : "";
+      } catch (error) {
+        $("query-status").textContent = "Unable to reach the RAG server.";
+      } finally {
+        $("query-progress").classList.remove("active");
+        $("ask").disabled = false;
+      }
+    };
+    loadDocuments();
+  </script>
+</body>
+</html>
