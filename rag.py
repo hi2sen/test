@@ -37,7 +37,7 @@ embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
 llm = ChatOllama(model=LLM_MODEL, temperature=0)
 prompt = ChatPromptTemplate.from_template(
     """Use the context below to answer the question. If the answer is not in
-the context, say so clearly. Mention the source filename when useful. No hallucinations
+the context, say so clearly. Mention the source filename when useful.
 
 Context:
 {context}
